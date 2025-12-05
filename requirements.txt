@@ -1,0 +1,9 @@
+streamlit>=1.22.0
+pandas>=1.4
+numpy>=1.21
+scikit-learn>=1.0
+matplotlib>=3.4
+
+# Optional (transformer demo)
+transformers>=4.30.0
+torch>=2.0.0
