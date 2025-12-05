@@ -1,95 +1,74 @@
-# -*- coding: utf-8 -*-
-"""
-fake_news.py
+import streamlit as st
+import pandas as pd
+import numpy as np
 
-Converted from fake_news.ipynb (Colab).
-This script trains a TF-IDF + Logistic Regression classifier to detect
-fake vs real news using two CSV files (True.csv and Fake.csv).
-
-Usage:
-    python fake_news.py --true True.csv --fake Fake.csv
-    python fake_news.py --true path/to/True.csv --fake path/to/Fake.csv --use-bert
-
-Notes:
-- This script is intended to run outside Colab. It does not perform pip installs.
-  If a required package is missing, install it first, e.g.:
-    pip install pandas scikit-learn matplotlib transformers
-"""
-
-from __future__ import annotations
-import os
-import sys
-import argparse
-import textwrap
-import warnings
-
-warnings.filterwarnings("ignore", category=FutureWarning)
-
-# Required imports (fail fast with helpful message)
-try:
-    import pandas as pd
-except Exception as e:
-    print("Missing dependency: pandas. Install with `pip install pandas`.")
-    raise e
-
-try:
-    from sklearn.model_selection import train_test_split
-    from sklearn.feature_extraction.text import TfidfVectorizer
-    from sklearn.linear_model import LogisticRegression
-    from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
-except Exception as e:
-    print("Missing dependency: scikit-learn. Install with `pip install scikit-learn`.")
-    raise e
-
-# Optional imports
-try:
-    import numpy as np
-except Exception:
-    np = None
-
+# Try to import matplotlib for richer plotting; fall back gracefully if not available
 try:
     import matplotlib.pyplot as plt
 except Exception:
     plt = None
 
-# Transformers is optional and only used if --use-bert is passed
-try:
-    from transformers import pipeline as hf_pipeline
-except Exception:
-    hf_pipeline = None
+from sklearn.model_selection import train_test_split
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+from sklearn.utils import shuffle
 
-def load_and_prepare(true_path: str, fake_path: str) -> pd.DataFrame:
-    """Load True.csv and Fake.csv, add labels, combine and clean."""
-    if not os.path.exists(true_path):
-        raise FileNotFoundError(f"True file not found: {true_path}")
-    if not os.path.exists(fake_path):
-        raise FileNotFoundError(f"Fake file not found: {fake_path}")
+st.set_page_config(page_title="Fake News Detector", layout="wide")
 
-    true_df = pd.read_csv(true_path)
-    fake_df = pd.read_csv(fake_path)
+st.title("Fake News Detector — TF-IDF + Logistic Regression")
+st.markdown(
+    "Upload the True.csv and Fake.csv files, train the model, "
+    "view evaluation metrics and predict whether input text is real or fake."
+)
 
-    # Add label columns
-    true_df = true_df.copy()
-    fake_df = fake_df.copy()
-    true_df["label"] = "real"
-    fake_df["label"] = "fake"
+# Sidebar controls
+st.sidebar.header("Data / Training settings")
+use_uploaded = st.sidebar.checkbox("Upload CSV files", value=True)
+true_upload = None
+fake_upload = None
 
-    # Combine
-    data = pd.concat([true_df, fake_df], ignore_index=True)
+if use_uploaded:
+    true_upload = st.sidebar.file_uploader("Upload True.csv", type=["csv"])
+    fake_upload = st.sidebar.file_uploader("Upload Fake.csv", type=["csv"])
+else:
+    st.sidebar.write("Provide file paths on the server (not supported in this demo).")
 
-    # Basic checks and cleaning
-    if "text" not in data.columns:
-        raise KeyError("Expected a 'text' column in both CSV files.")
+test_size = st.sidebar.slider("Test set fraction", 0.05, 0.5, 0.2)
+random_state = st.sidebar.number_input("Random seed", value=42, step=1)
+train_button = st.sidebar.button("Load & Train")
 
-    data = data.dropna(subset=["text", "label"]).reset_index(drop=True)
-    data["label_num"] = data["label"].map({"real": 1, "fake": 0})
+st.sidebar.markdown("---")
+st.sidebar.markdown("Optional")
+run_transformers = st.sidebar.checkbox(
+    "Run lightweight transformer demo (requires transformers)", value=False
+)
+plot_output_name = st.sidebar.text_input(
+    "Save feature plot as (leave blank to show only)", value=""
+)
 
-    return data
+info_placeholder = st.empty()
 
-def train_tf_logreg(data: pd.DataFrame, test_size: float = 0.2, random_state: int = 42):
-    """Train TF-IDF vectorizer and Logistic Regression classifier."""
-    X = data["text"]
-    y = data["label_num"]
+# Caching helpers
+@st.cache_data
+def load_csv_file(uploaded) -> pd.DataFrame:
+    if uploaded is None:
+        return None
+    try:
+        df = pd.read_csv(uploaded)
+        return df
+    except Exception as e:
+        st.error(f"Error reading CSV: {e}")
+        return None
+
+@st.cache_resource
+def train_model_and_vectorizer(df: pd.DataFrame, test_size: float, random_state: int):
+    if "text" not in df.columns:
+        raise KeyError("Combined data must contain a 'text' column.")
+    X = df["text"].astype(str)
+    y = df["label_num"].astype(int)
+
+    X, y = shuffle(X, y, random_state=random_state)
 
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=test_size, random_state=random_state, stratify=y
@@ -99,17 +78,15 @@ def train_tf_logreg(data: pd.DataFrame, test_size: float = 0.2, random_state: in
     X_train_tfidf = vectorizer.fit_transform(X_train)
     X_test_tfidf = vectorizer.transform(X_test)
 
-    # Train logistic regression
     model = LogisticRegression(max_iter=1000)
     model.fit(X_train_tfidf, y_train)
 
-    # Evaluate
     y_pred = model.predict(X_test_tfidf)
     acc = accuracy_score(y_test, y_pred)
-    report = classification_report(y_test, y_pred, target_names=["fake", "real"])
+    report = classification_report(y_test, y_pred, target_names=["fake", "real"], zero_division=0)
     cm = confusion_matrix(y_test, y_pred)
 
-    results = {
+    return {
         "vectorizer": vectorizer,
         "model": model,
         "X_test": X_test,
@@ -118,132 +95,161 @@ def train_tf_logreg(data: pd.DataFrame, test_size: float = 0.2, random_state: in
         "accuracy": acc,
         "report": report,
         "confusion_matrix": cm,
+        "feature_names": vectorizer.get_feature_names_out(),
+        "coefs": model.coef_[0],
     }
-    return results
 
-def print_summary(data: pd.DataFrame, results: dict):
-    print("\nData summary:")
-    print(f" - total examples: {len(data)}")
-    print(" - label counts:")
-    print(data["label"].value_counts().to_string())
+def prepare_combined(true_df: pd.DataFrame, fake_df: pd.DataFrame) -> pd.DataFrame:
+    true_df = true_df.copy()
+    fake_df = fake_df.copy()
+    true_df["label"] = "real"
+    fake_df["label"] = "fake"
+    data = pd.concat([true_df, fake_df], ignore_index=True)
+    if "text" not in data.columns:
+        if "title" in data.columns:
+            data["text"] = data["title"].astype(str)
+        else:
+            raise KeyError("Neither 'text' nor 'title' columns found in uploaded CSVs.")
+    data = data.dropna(subset=["text", "label"]).reset_index(drop=True)
+    data["label_num"] = data["label"].map({"real": 1, "fake": 0})
+    return data
 
-    print("\nModel evaluation:")
-    print(f" - Accuracy: {results['accuracy']:.4f}")
-    print("\nClassification report:")
-    print(results["report"])
-    print("Confusion matrix:")
-    print(results["confusion_matrix"])  
+# Load & Train flow
+model_info = None
+data = None
 
-def interactive_predict(model, vectorizer):
-    """Prompt user for a headline/text and print prediction."""
+if train_button:
+    if not use_uploaded:
+        st.sidebar.error("Non-upload file-loading is not available in this demo.")
+    else:
+        if true_upload is None or fake_upload is None:
+            st.sidebar.error("Please upload both True.csv and Fake.csv to train.")
+        else:
+            with st.spinner("Loading CSVs..."):
+                true_df = load_csv_file(true_upload)
+                fake_df = load_csv_file(fake_upload)
+                if true_df is None or fake_df is None:
+                    st.error("Failed to load one or more uploaded CSVs.")
+                else:
+                    try:
+                        data = prepare_combined(true_df, fake_df)
+                    except Exception as e:
+                        st.error(f"Error preparing data: {e}")
+                        data = None
+
+            if data is not None:
+                info_placeholder.info(f"Loaded dataset with {len(data)} rows — training...")
+                try:
+                    model_info = train_model_and_vectorizer(data, test_size=test_size, random_state=int(random_state))
+                    info_placeholder.success(f"Training complete — accuracy: {model_info['accuracy']:.4f}")
+                except Exception as e:
+                    st.error(f"Training failed: {e}")
+                    model_info = None
+
+# If already uploaded outside "train" button (convenience), show preview and allow training
+if use_uploaded and (true_upload is not None and fake_upload is not None) and model_info is None:
+    st.info("Files uploaded. Press 'Load & Train' in the sidebar to train the model.")
+
+# Show dataset preview if available
+if data is not None:
+    st.subheader("Data sample")
+    st.dataframe(data.head())
+
+# If model exists, show evaluation and interactive prediction
+if model_info is not None:
+    st.subheader("Model evaluation")
+    st.write(f"Accuracy: **{model_info['accuracy']:.4f}**")
+    st.text("Classification report:")
+    st.text(model_info["report"])
+
+    cm = model_info["confusion_matrix"]
+    # Confusion matrix: use matplotlib if available, otherwise show numeric fallback
+    if plt is not None:
+        fig_cm, ax = plt.subplots(figsize=(4, 3))
+        ax.imshow(cm, cmap="Blues")
+        ax.set_xticks([0, 1])
+        ax.set_yticks([0, 1])
+        ax.set_xticklabels(["fake", "real"])
+        ax.set_yticklabels(["fake", "real"])
+        ax.set_xlabel("Predicted")
+        ax.set_ylabel("Actual")
+        for i in range(cm.shape[0]):
+            for j in range(cm.shape[1]):
+                ax.text(j, i, int(cm[i, j]), ha="center", va="center", color="black")
+        st.pyplot(fig_cm)
+    else:
+        st.write("Confusion matrix (matplotlib not available):")
+        st.write(cm)
+
+    # Top features visualization
+    st.subheader("Top features (from Logistic Regression coefficients)")
     try:
-        while True:
-            text = input("\nEnter a headline/text to classify (or press Enter to quit): ").strip()
-            if not text:
-                print("Exiting interactive prediction.")
-                break
-            tfidf = vectorizer.transform([text])
-            pred = model.predict(tfidf)[0]
-            label = "real" if int(pred) == 1 else "fake"
-            print(f"Prediction: {label} (label_num={{int(pred)}})")
-    except (KeyboardInterrupt, EOFError):
-        print("\nInteractive prediction terminated.")
-
-def plot_top_features(vectorizer, model, top_n: int = 10, out_path: str | None = None):
-    """Plot top positive and negative features from logistic regression coefficients."""
-    if np is None:
-        print("NumPy not available; cannot compute top features.")
-        return
-    if plt is None:
-        print("matplotlib not available; cannot plot top features.")
-        return
-
-    try:
-        feat_names = np.array(vectorizer.get_feature_names_out())
-        coefs = model.coef_[0]
-        # top positive
+        feature_names = np.array(model_info["feature_names"])
+        coefs = model_info["coefs"]
+        top_n = 10
         top_pos_idx = np.argsort(coefs)[-top_n:][::-1]
         top_neg_idx = np.argsort(coefs)[:top_n]
 
-        labels = np.concatenate([feat_names[top_pos_idx], feat_names[top_neg_idx]])
+        labels = np.concatenate([feature_names[top_pos_idx], feature_names[top_neg_idx]])
         values = np.concatenate([coefs[top_pos_idx], coefs[top_neg_idx]])
-
-        y_pos = np.arange(len(labels))
-
-        plt.figure(figsize=(10, 6))
         colors = ["tab:green"] * top_n + ["tab:red"] * top_n
-        plt.barh(y_pos, values, color=colors)
-        plt.yticks(y_pos, labels)
-        plt.xlabel("Coefficient value (positive -> indicates 'real')")
-        plt.title(f"Top {top_n} positive and top {top_n} negative features")
-        plt.gca().invert_yaxis()
-        plt.tight_layout()
 
-        if out_path:
-            plt.savefig(out_path)
-            print(f"Saved feature plot to {out_path}")
+        if plt is not None:
+            fig_feats, ax2 = plt.subplots(figsize=(8, 6))
+            y_pos = np.arange(len(labels))
+            ax2.barh(y_pos, values, color=colors)
+            ax2.set_yticks(y_pos)
+            ax2.set_yticklabels(labels)
+            ax2.invert_yaxis()
+            ax2.set_xlabel("Coefficient value")
+            st.pyplot(fig_feats)
+            if plot_output_name:
+                fig_feats.savefig(plot_output_name)
+                st.success(f"Saved feature plot to {plot_output_name}")
         else:
-            plt.show()
-
+            # fallback to simple bar chart
+            try:
+                df_feats = pd.DataFrame({"feature": labels, "coef": values}).set_index("feature")
+                st.write("Top features (fallback chart):")
+                st.bar_chart(df_feats["coef"])
+            except Exception:
+                st.write("Plotting not available. Install matplotlib for richer charts.")
     except Exception as e:
-        print(f"Could not generate feature plot: {e}")
+        st.error(f"Could not compute top features: {e}")
 
-def run_transformer_demo(sample_text: str = "Breaking news: Trump is our president"):
-    """Run a small transformer-based text-classification demo if transformers installed."""
-    if hf_pipeline is None:
-        print("transformers not installed; skipping transformer demo. Install with `pip install transformers`.")
-        return
-    try:
-        # Using a lightweight pretrained model for demo
-        clf = hf_pipeline("text-classification", model="distilbert-base-uncased-finetuned-sst-2-english")
-        result = clf(sample_text)[0]
-        print("\nTransformer demo result:")
-        print(f" - text: {sample_text} ")
-        print(f" - label: {result.get('label')}, score: {result.get('score'):.4f}")
-    except Exception as e:
-        print(f"Transformer demo failed: {e}")
+    # Interactive prediction
+    st.subheader("Classify new text")
+    user_text = st.text_area("Enter headline / article text to classify:", height=150)
+    if st.button("Predict"):
+        if not user_text or user_text.strip() == "":
+            st.warning("Please enter some text to classify.")
+        else:
+            tfidf = model_info["vectorizer"].transform([user_text])
+            pred = model_info["model"].predict(tfidf)[0]
+            prob = None
+            if hasattr(model_info["model"], "predict_proba"):
+                prob = model_info["model"].predict_proba(tfidf)[0].max()
+            label = "real" if int(pred) == 1 else "fake"
+            st.success(f"Prediction: {label} (label_num={int(pred)})")
+            if prob is not None:
+                st.write(f"Confidence: {prob:.3f}")
 
-def parse_args(argv=None):
-    p = argparse.ArgumentParser(
-        description="Train a TF-IDF + Logistic Regression model to detect fake news.",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=textwrap.dedent(
-            """Example:
-  python fake_news.py --true True.csv --fake Fake.csv --plot-features features.png --use-bert
-"""
-        ),
-    )
-    p.add_argument("--true", "-t", default="True.csv", help="Path to True.csv")
-    p.add_argument("--fake", "-f", default="Fake.csv", help="Path to Fake.csv")
-    p.add_argument("--no-interactive", dest="interactive", action="store_false", help="Skip interactive prediction")
-    p.add_argument("--use-bert", action="store_true", help="Run a small transformer demo (requires `transformers`)" )
-    p.add_argument("--plot-features", nargs="?", const="top_features.png", help="Save top feature plot to file (requires matplotlib & numpy).")
-    p.add_argument("--test-size", type=float, default=0.2, help="Test set proportion (default: 0.2)")
-    return p.parse_args(argv)
+    # Optionally run transformer demo
+    if run_transformers:
+        try:
+            from transformers import pipeline as hf_pipeline  # local import
+            st.subheader("Transformer demo (distilbert SST-2)")
+            transformer = hf_pipeline("text-classification", model="distilbert-base-uncased-finetuned-sst-2-english")
+            sample = st.text_input("Transformer demo input:", value="Breaking news: Trump is our president")
+            if st.button("Run transformer demo"):
+                with st.spinner("Running transformer inference..."):
+                    out = transformer(sample)[0]
+                    st.write(out)
+        except Exception as e:
+            st.error(f"Transformers demo failed or 'transformers' not installed: {e}")
 
-def main(argv=None):
-    args = parse_args(argv)
-
-    try:
-        data = load_and_prepare(args.true, args.fake)
-    except Exception as e:
-        print(f"Error loading data: {e}")
-        sys.exit(1)
-
-    results = train_tf_logreg(data, test_size=args.test_size)
-    print_summary(data, results)
-
-    # Optionally plot top features
-    if args.plot_features:
-        plot_top_features(results["vectorizer"], results["model"], top_n=10, out_path=args.plot_features)
-
-    # Optional transformer demo
-    if args.use_bert:
-        run_transformer_demo()
-
-    # Interactive prediction (unless disabled)
-    if args.interactive:
-        interactive_predict(results["model"], results["vectorizer"])  
-
-if __name__ == "__main__":
-    main()
+st.markdown("---")
+st.caption(
+    "App generated from fake_news.ipynb → TF-IDF + Logistic Regression conversion. "
+    "Install dependencies with `pip install -r requirements.txt` and run: `streamlit run fake_news_streamlit.py`."
+)
