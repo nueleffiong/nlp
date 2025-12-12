@@ -1,6 +1,4 @@
-Here is a cleaned‑up, production‑ready version of your app that you can completely replace the initial code with. It keeps the trained model and data in `st.session_state`, so “Classify new text” and “Predict” work reliably.
 
-```python
 import streamlit as st
 import pandas as pd
 import numpy as np
