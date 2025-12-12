@@ -223,7 +223,7 @@ if model_info is not None:
 
     st.pyplot(fig_cm)
 
-    # Top features
+        # Top features visualization
     st.subheader("Top features (from Logistic Regression coefficients)")
     try:
         feature_names = np.array(model_info["feature_names"])
@@ -243,4 +243,64 @@ if model_info is not None:
         y_pos = np.arange(len(labels))
         ax2.barh(y_pos, values, color=colors)
         ax2.set_yticks(y_pos)
-        ax2.set_yt
+        ax2.set_yticklabels(labels)
+        ax2.invert_yaxis()
+        ax2.set_xlabel("Coefficient value")
+        st.pyplot(fig_feats)
+
+        if plot_output_name:
+            fig_feats.savefig(plot_output_name)
+            st.success(f"Saved feature plot to {plot_output_name}")
+    except Exception as e:
+        st.error(f"Could not compute top features: {e}")
+
+    # Interactive prediction
+    st.subheader("Classify new text")
+    user_text = st.text_area(
+        "Enter headline / article text to classify:",
+        height=150,
+    )
+
+    if st.button("Predict"):
+        if not user_text or user_text.strip() == "":
+            st.warning("Please enter some text to classify.")
+        else:
+            tfidf = model_info["vectorizer"].transform([user_text])
+            pred = model_info["model"].predict(tfidf)[0]
+            prob = None
+            if hasattr(model_info["model"], "predict_proba"):
+                prob = model_info["model"].predict_proba(tfidf)[0].max()
+            label = "real" if int(pred) == 1 else "fake"
+            st.success(f"Prediction: {label} (label_num={int(pred)})")
+            if prob is not None:
+                st.write(f"Confidence: {prob:.3f}")
+
+    # Optional transformer demo
+    if run_transformers:
+        try:
+            from transformers import pipeline as hf_pipeline
+
+            st.subheader("Transformer demo (distilbert SST-2)")
+            transformer = hf_pipeline(
+                "text-classification",
+                model="distilbert-base-uncased-finetuned-sst-2-english",
+            )
+            sample = st.text_input(
+                "Transformer demo input:",
+                value="Breaking news: Trump is our president",
+            )
+            if st.button("Run transformer demo"):
+                with st.spinner("Running transformer inference..."):
+                    out = transformer(sample)[0]
+                    st.write(out)
+        except Exception as e:
+            st.error(
+                f"Transformers demo failed or 'transformers' not installed: {e}"
+            )
+
+st.markdown("---")
+st.caption(
+    "Install dependencies with "
+    "`pip install streamlit pandas scikit-learn matplotlib transformers` "
+    "and run: `streamlit run myfake_news_streamlit.py`."
+)
